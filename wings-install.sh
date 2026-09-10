@@ -46,23 +46,24 @@ section() {
     echo
 }
 
-# ---------------- ROOT CHECK ----------------
+# ---------------- ENVIRONMENT DETECTION ----------------
 
-if [[ $EUID -ne 0 ]]; then
-    echo
-    fail "This installer must be run as root."
-    echo
-    echo "Run:"
-    echo "  sudo bash wings-install.sh"
-    echo
-    exit 1
+IS_CODESPACES="false"
+
+if [[ "${CODESPACES:-}" == "true" ]]; then
+    IS_CODESPACES="true"
+fi
+
+if [[ -n "${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}" ]]; then
+    IS_CODESPACES="true"
 fi
 
 # ---------------- LOGO ----------------
 
-clear
+clear 2>/dev/null || true
 
 printf "${CYAN}${BOLD}"
+
 cat <<'EOF'
 
 ╔══════════════════════════════════════════════════════════════════╗
@@ -80,6 +81,7 @@ cat <<'EOF'
 ╚══════════════════════════════════════════════════════════════════╝
 
 EOF
+
 printf "${RESET}"
 
 printf "${PURPLE}${BOLD}"
@@ -126,17 +128,56 @@ case "$ARCH" in
         ;;
 esac
 
-info "Checking systemd..."
+# ---------------- CODESPACES MODE ----------------
 
-if [[ "$(ps -p 1 -o comm= 2>/dev/null | tr -d ' ')" == "systemd" ]]; then
-    ok "systemd is running."
+if [[ "$IS_CODESPACES" == "true" ]]; then
+
+    echo
+    printf "${PURPLE}${BOLD}"
+    echo "                 ✦ GITHUB CODESPACES MODE ✦"
+    printf "${RESET}"
+    echo
+
+    ok "GitHub Codespaces detected."
+    warn "Codespaces does not provide systemd for Wings."
+    warn "Docker/systemd installation will be skipped."
+    echo
+    info "Running in preparation mode."
+    info "Wings will NOT be falsely reported as online."
+
+    MODE="codespaces"
+
 else
-    fail "systemd is not running."
-    echo
-    warn "Wings must be installed on a real Linux VPS/server."
-    warn "Do not run this installer inside GitHub Codespaces/Docker containers."
-    echo
-    exit 1
+
+    MODE="vps"
+
+    # ---------------- ROOT CHECK ----------------
+
+    if [[ $EUID -ne 0 ]]; then
+        echo
+        fail "This installer must be run as root on a VPS."
+        echo
+        echo "Run:"
+        echo "  sudo bash wings-install.sh"
+        echo
+        exit 1
+    fi
+
+    # ---------------- SYSTEMD CHECK ----------------
+
+    info "Checking systemd..."
+
+    if [[ "$(ps -p 1 -o comm= 2>/dev/null | tr -d ' ')" == "systemd" ]]; then
+        ok "systemd is running."
+    else
+        fail "systemd is not running."
+        echo
+        warn "This does not appear to be a normal VPS."
+        warn "Run Wings on a real Linux VPS/server."
+        echo
+        exit 1
+    fi
+
 fi
 
 # ---------------- NODE INPUT ----------------
@@ -168,10 +209,8 @@ echo
 
 PANEL_URL="${PANEL_URL%/}"
 
-# Remove accidental paths if user pasted them.
 PANEL_URL="${PANEL_URL%/admin/nodes/view/1/configuration}"
 
-# Remove trailing slash again.
 PANEL_URL="${PANEL_URL%/}"
 
 if [[ -z "$PANEL_URL" ]]; then
@@ -198,6 +237,271 @@ ok "Panel URL received."
 ok "Node UUID received."
 ok "Token ID received."
 ok "Token received securely."
+
+# ================================================================
+# CODESPACES PREPARATION MODE
+# ================================================================
+
+if [[ "$MODE" == "codespaces" ]]; then
+
+    section "03 • CODESPACES PREPARATION"
+
+    # Use the repository/workspace instead of /etc and /usr/local.
+    WORKSPACE="${GITHUB_WORKSPACE:-$PWD}"
+
+    UTKARSH_DIR="$WORKSPACE/.utkarsh-wings"
+    BIN_DIR="$UTKARSH_DIR/bin"
+    CONFIG_DIR="$UTKARSH_DIR/etc/pterodactyl"
+    DATA_DIR="$UTKARSH_DIR/var/lib/pterodactyl"
+    LOG_DIR="$UTKARSH_DIR/var/log/pterodactyl"
+
+    mkdir -p "$BIN_DIR"
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "$DATA_DIR/volumes"
+    mkdir -p "$DATA_DIR/archives"
+    mkdir -p "$DATA_DIR/backups"
+    mkdir -p "$LOG_DIR"
+    mkdir -p "$UTKARSH_DIR/tmp"
+
+    ok "Codespaces workspace prepared."
+
+    # ---------------- CURL ----------------
+
+    info "Checking curl..."
+
+    if command -v curl >/dev/null 2>&1; then
+        ok "curl is installed."
+    else
+        fail "curl is required but is not installed."
+        echo
+        echo "Install curl in your Codespace and run this installer again."
+        exit 1
+    fi
+
+    # ---------------- WINGS DOWNLOAD ----------------
+
+    section "04 • WINGS BINARY"
+
+    info "Downloading official Wings binary..."
+
+    WINGS_URL="https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_${WINGS_ARCH}"
+
+    curl -fL "$WINGS_URL" -o "$BIN_DIR/wings"
+
+    if [[ ! -s "$BIN_DIR/wings" ]]; then
+        fail "Failed to download Wings."
+        exit 1
+    fi
+
+    chmod +x "$BIN_DIR/wings"
+
+    ok "Wings binary downloaded."
+
+    # ---------------- VERSION ----------------
+
+    info "Checking Wings version..."
+
+    WINGS_VERSION="$("$BIN_DIR/wings" version 2>/dev/null | head -n 1 || true)"
+
+    if [[ -n "$WINGS_VERSION" ]]; then
+        ok "Installed: $WINGS_VERSION"
+    else
+        ok "Wings binary verified."
+    fi
+
+    # ---------------- CONFIG ----------------
+
+    section "05 • GENERATING CONFIGURATION"
+
+    info "Creating Codespaces configuration..."
+
+    cat > "$CONFIG_DIR/config.yml" <<EOF
+debug: false
+
+uuid: ${NODE_UUID}
+token_id: ${TOKEN_ID}
+token: ${TOKEN}
+
+api:
+  host: 0.0.0.0
+  port: 8080
+  ssl:
+    enabled: false
+    cert: ""
+    key: ""
+  upload_limit: 100
+
+system:
+  root_directory: ${DATA_DIR}
+  log_directory: ${LOG_DIR}
+  data: ${DATA_DIR}/volumes
+  archive_directory: ${DATA_DIR}/archives
+  backup_directory: ${DATA_DIR}/backups
+  tmp_directory: ${UTKARSH_DIR}/tmp
+  username: $(whoami)
+  timezone: UTC
+  user:
+    rootless:
+      enabled: false
+      container_uid: 0
+      container_gid: 0
+    uid: $(id -u)
+    gid: $(id -g)
+
+docker:
+  network:
+    name: pterodactyl_nw
+    interfaces:
+      v4:
+        subnet: 172.18.0.0/16
+        gateway: 172.18.0.1
+      v6:
+        subnet: fdba:17c8:6c94::/64
+        gateway: fdba:17c8:6c94::1
+  domainname: ""
+  registries: {}
+  tmpfs_size: 100
+  container_pid_limit: 512
+  installer_limits:
+    memory: 1024
+    cpu: 100
+  build:
+    network: pterodactyl_nw
+
+remote: ${PANEL_URL}
+
+remote_query:
+  timeout: 30
+  boot_servers_per_page: 50
+
+allowed_mounts: []
+allowed_origins: []
+
+sftp:
+  bind_address: 0.0.0.0
+  bind_port: 2022
+  read_only: false
+EOF
+
+    chmod 600 "$CONFIG_DIR/config.yml"
+
+    ok "Codespaces config.yml created."
+    ok "Configuration permissions secured."
+
+    # ---------------- DOCKER CHECK ----------------
+
+    section "06 • ENVIRONMENT CHECK"
+
+    info "Checking Docker availability..."
+
+    if command -v docker >/dev/null 2>&1; then
+
+        ok "Docker CLI detected."
+
+        if docker info >/dev/null 2>&1; then
+            ok "Docker daemon is accessible."
+            DOCKER_AVAILABLE="true"
+        else
+            warn "Docker CLI exists, but Docker daemon is unavailable."
+            warn "This is normal for many GitHub Codespaces."
+            DOCKER_AVAILABLE="false"
+        fi
+
+    else
+
+        warn "Docker CLI is not installed."
+        warn "Docker installation is intentionally skipped in Codespaces."
+        DOCKER_AVAILABLE="false"
+
+    fi
+
+    # ---------------- CONFIG TEST ----------------
+
+    section "07 • CODESPACES VALIDATION"
+
+    info "Checking Wings executable..."
+
+    if "$BIN_DIR/wings" version >/dev/null 2>&1; then
+        ok "Wings executable works."
+    else
+        fail "Wings executable could not be executed."
+        exit 1
+    fi
+
+    echo
+    warn "Wings has NOT been started."
+    warn "Codespaces is not being treated as a production Wings node."
+
+    # ---------------- SAVE INFO ----------------
+
+    cat > "$UTKARSH_DIR/README.txt" <<EOF
+UTKARSH WINGS PRO
+Codespaces preparation
+
+Panel:
+${PANEL_URL}
+
+Node UUID:
+${NODE_UUID}
+
+Wings binary:
+${BIN_DIR}/wings
+
+Configuration:
+${CONFIG_DIR}/config.yml
+
+IMPORTANT:
+This Codespace is only a preparation environment.
+Wings should ultimately run on a real Linux VPS with Docker
+and systemd.
+
+DO NOT COMMIT config.yml TO A PUBLIC GITHUB REPOSITORY.
+The configuration contains your Wings authentication token.
+EOF
+
+    # ---------------- FINAL ----------------
+
+    section "08 • CODESPACES READY"
+
+    printf "${PURPLE}${BOLD}"
+
+    cat <<'EOF'
+
+╔══════════════════════════════════════════════════════════════════╗
+║                                                                  ║
+║                 ✓  CODESPACES READY  ✓                          ║
+║                                                                  ║
+║              U T K A R S H   W I N G S   P R O                  ║
+║                                                                  ║
+║              Wings binary + configuration prepared              ║
+║                                                                  ║
+╚══════════════════════════════════════════════════════════════════╝
+
+EOF
+
+    printf "${RESET}"
+
+    echo
+    printf "${CYAN}${BOLD}Codespaces files${RESET}\n"
+    echo
+    echo "  Wings:  $BIN_DIR/wings"
+    echo "  Config: $CONFIG_DIR/config.yml"
+    echo
+    printf "${YELLOW}${BOLD}IMPORTANT${RESET}\n"
+    echo
+    echo "  Codespaces is NOT running Wings."
+    echo "  No systemd service was created."
+    echo "  No Docker daemon was started."
+    echo "  Use a real VPS for the production Wings node."
+    echo
+    printf "${PURPLE}${BOLD}                    ✦ U T K A R S H ✦${RESET}\n"
+    echo
+    exit 0
+fi
+
+# ================================================================
+# REAL VPS MODE
+# ================================================================
 
 # ---------------- DEPENDENCIES ----------------
 
@@ -358,7 +662,6 @@ sftp:
   bind_address: 0.0.0.0
   bind_port: 2022
   read_only: false
-
 EOF
 
 chmod 600 /etc/pterodactyl/config.yml
@@ -372,29 +675,30 @@ section "06 • CONFIGURATION TEST"
 
 info "Testing Wings configuration..."
 
-if wings --debug >/tmp/utkarsh-wings-test.log 2>&1 &
-then
-    WINGS_TEST_PID=$!
-    sleep 5
+TEST_LOG="/tmp/utkarsh-wings-test.log"
 
-    if kill -0 "$WINGS_TEST_PID" 2>/dev/null; then
-        kill "$WINGS_TEST_PID" >/dev/null 2>&1 || true
-        wait "$WINGS_TEST_PID" 2>/dev/null || true
+wings --debug >"$TEST_LOG" 2>&1 &
+WINGS_TEST_PID=$!
 
-        ok "Wings configuration loaded successfully."
-    else
-        wait "$WINGS_TEST_PID" 2>/dev/null || true
+sleep 5
 
-        fail "Wings could not start with this configuration."
-        echo
-        cat /tmp/utkarsh-wings-test.log
-        echo
-        exit 1
-    fi
+if kill -0 "$WINGS_TEST_PID" 2>/dev/null; then
+
+    kill "$WINGS_TEST_PID" >/dev/null 2>&1 || true
+    wait "$WINGS_TEST_PID" 2>/dev/null || true
+
+    ok "Wings configuration loaded successfully."
+
 else
-    fail "Could not launch Wings."
-    cat /tmp/utkarsh-wings-test.log || true
+
+    wait "$WINGS_TEST_PID" 2>/dev/null || true
+
+    fail "Wings could not start with this configuration."
+    echo
+    cat "$TEST_LOG"
+    echo
     exit 1
+
 fi
 
 # ---------------- SYSTEMD ----------------
@@ -408,14 +712,18 @@ cat > /etc/systemd/system/wings.service <<'EOF'
 Description=Pterodactyl Wings Daemon
 After=docker.service
 Requires=docker.service
+PartOf=docker.service
 
 [Service]
 User=root
 WorkingDirectory=/etc/pterodactyl
 LimitNOFILE=4096
+PIDFile=/var/run/wings/daemon.pid
 ExecStart=/usr/local/bin/wings
 Restart=on-failure
-RestartSec=5
+StartLimitInterval=180
+StartLimitBurst=30
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
@@ -462,6 +770,7 @@ fi
 section "09 • FINAL STATUS"
 
 printf "${GREEN}${BOLD}"
+
 cat <<'EOF'
 
 ╔══════════════════════════════════════════════════════════════════╗
@@ -475,6 +784,7 @@ cat <<'EOF'
 ╚══════════════════════════════════════════════════════════════════╝
 
 EOF
+
 printf "${RESET}"
 
 echo
@@ -491,10 +801,11 @@ echo
 printf "${PURPLE}${BOLD}"
 echo "                    ✦ U T K A R S H ✦"
 printf "${RESET}"
+
 echo
 printf "${GRAY}          Pterodactyl Wings deployment complete.${RESET}\n"
 echo
 
-rm -f /tmp/utkarsh-wings-test.log
+rm -f "$TEST_LOG"
 
 exit 0
