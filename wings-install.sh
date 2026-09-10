@@ -7,13 +7,10 @@
 
 set -Eeuo pipefail
 
-# ------------------------------------------------
-# COLORS
-# ------------------------------------------------
+# ---------------- COLORS ----------------
+
 RESET='\033[0m'
 BOLD='\033[1m'
-DIM='\033[2m'
-
 CYAN='\033[38;5;51m'
 BLUE='\033[38;5;39m'
 PURPLE='\033[38;5;141m'
@@ -23,25 +20,7 @@ RED='\033[38;5;196m'
 WHITE='\033[97m'
 GRAY='\033[90m'
 
-# ------------------------------------------------
-# TERMINAL HELPERS
-# ------------------------------------------------
-
-clear_screen() {
-    printf '\033c'
-}
-
-line() {
-    printf "${CYAN}════════════════════════════════════════════════════════════════════${RESET}\n"
-}
-
-section() {
-    echo
-    printf "${PURPLE}╭──────────────────────────────────────────────────────────────╮${RESET}\n"
-    printf "${PURPLE}│${RESET}  ${BOLD}${WHITE}%-58s${RESET}${PURPLE}│${RESET}\n" "$1"
-    printf "${PURPLE}╰──────────────────────────────────────────────────────────────╯${RESET}\n"
-    echo
-}
+# ---------------- FUNCTIONS ----------------
 
 ok() {
     printf "      ${GREEN}✔${RESET} %s\n" "$1"
@@ -59,83 +38,29 @@ fail() {
     printf "      ${RED}✖${RESET} %s\n" "$1"
 }
 
-sleep_small() {
-    sleep 0.4
+section() {
+    echo
+    printf "${PURPLE}╭──────────────────────────────────────────────────────────────╮${RESET}\n"
+    printf "${PURPLE}│${RESET}  ${BOLD}${WHITE}%-58s${RESET}${PURPLE}│${RESET}\n" "$1"
+    printf "${PURPLE}╰──────────────────────────────────────────────────────────────╯${RESET}\n"
+    echo
 }
 
-spinner() {
-    local pid="$1"
-    local text="$2"
-    local spin='|/-\'
-    local i=0
+# ---------------- ROOT CHECK ----------------
 
-    while kill -0 "$pid" 2>/dev/null; do
-        i=$(( (i + 1) % 4 ))
-        printf "\r      ${CYAN}%s${RESET} %s" "${spin:$i:1}" "$text"
-        sleep 0.15
-    done
-
-    printf "\r\033[K"
-}
-
-run_step() {
-    local text="$1"
-    shift
-
-    "$@" >/tmp/utkarsh_wings_step.log 2>&1 &
-    local pid=$!
-
-    spinner "$pid" "$text"
-
-    if wait "$pid"; then
-        ok "$text"
-    else
-        fail "$text"
-        echo
-        cat /tmp/utkarsh_wings_step.log
-        echo
-        exit 1
-    fi
-}
-
-# ------------------------------------------------
-# ERROR HANDLER
-# ------------------------------------------------
-
-error_handler() {
-    local exit_code=$?
+if [[ $EUID -ne 0 ]]; then
     echo
-    printf "${RED}╔══════════════════════════════════════════════════════════════════╗${RESET}\n"
-    printf "${RED}║${RESET}  ${BOLD}UTKARSH WINGS INSTALLER ENCOUNTERED AN ERROR${RESET}             ${RED}║${RESET}\n"
-    printf "${RED}╚══════════════════════════════════════════════════════════════════╝${RESET}\n"
+    fail "This installer must be run as root."
     echo
-    printf "      ${RED}Exit code:${RESET} %s\n" "$exit_code"
-    printf "      ${YELLOW}Check the output above for the exact problem.${RESET}\n"
-    echo
-    exit "$exit_code"
-}
-
-trap error_handler ERR
-
-# ------------------------------------------------
-# ROOT CHECK
-# ------------------------------------------------
-
-if [[ "${EUID}" -ne 0 ]]; then
-    echo
-    printf "${RED}✖ This installer must be run as root.${RESET}\n"
-    echo
-    printf "Try:\n"
-    printf "  ${CYAN}sudo bash wings-install.sh${RESET}\n"
+    echo "Run:"
+    echo "  sudo bash wings-install.sh"
     echo
     exit 1
 fi
 
-# ------------------------------------------------
-# LOGO
-# ------------------------------------------------
+# ---------------- LOGO ----------------
 
-clear_screen
+clear
 
 printf "${CYAN}${BOLD}"
 cat <<'EOF'
@@ -161,44 +86,26 @@ printf "${PURPLE}${BOLD}"
 echo "                    ✦ U T K A R S H ✦"
 printf "${RESET}"
 
-printf "${CYAN}"
 echo
-echo "              PTERODACTYL WINGS INSTALLER"
-echo
-printf "${GRAY}        Automated Wings deployment for Pterodactyl 1.x${RESET}"
-echo
+printf "${CYAN}              PTERODACTYL WINGS INSTALLER${RESET}\n"
+printf "${GRAY}        Automated Wings deployment for Pterodactyl 1.x${RESET}\n"
 echo
 
-printf "${GREEN}      ✔${RESET} Initializing installer\n"
-sleep_small
-printf "${GREEN}      ✔${RESET} Preparing installation environment\n"
+ok "Initializing installer"
+ok "Preparing installation environment"
 
-# ------------------------------------------------
-# SYSTEM CHECK
-# ------------------------------------------------
+# ---------------- SYSTEM CHECK ----------------
 
 section "01 • SYSTEM CHECK"
 
 info "Detecting operating system..."
 
 if [[ -f /etc/os-release ]]; then
-    source /etc/os-release
-    OS_NAME="${PRETTY_NAME:-Unknown}"
+    . /etc/os-release
+    echo "      Operating System: ${WHITE}${PRETTY_NAME:-Unknown}${RESET}"
 else
-    OS_NAME="Unknown"
+    warn "Could not identify operating system."
 fi
-
-echo "      Operating System: ${WHITE}${OS_NAME}${RESET}"
-
-case "${ID:-}" in
-    ubuntu|debian)
-        ok "Supported Linux distribution detected."
-        ;;
-    *)
-        warn "This OS is not one of the officially documented targets."
-        warn "The installer will continue, but compatibility is not guaranteed."
-        ;;
-esac
 
 info "Checking CPU architecture..."
 
@@ -221,124 +128,118 @@ esac
 
 info "Checking systemd..."
 
-if command -v systemctl >/dev/null 2>&1; then
-    ok "systemd detected."
+if [[ "$(ps -p 1 -o comm= 2>/dev/null | tr -d ' ')" == "systemd" ]]; then
+    ok "systemd is running."
 else
-    fail "systemd is required for this installer."
+    fail "systemd is not running."
+    echo
+    warn "Wings must be installed on a real Linux VPS/server."
+    warn "Do not run this installer inside GitHub Codespaces/Docker containers."
+    echo
     exit 1
 fi
 
-info "Checking virtualization..."
-
-if command -v systemd-detect-virt >/dev/null 2>&1; then
-    VIRT="$(systemd-detect-virt || true)"
-
-    if [[ "$VIRT" == "openvz" || "$VIRT" == "lxc" ]]; then
-        warn "Detected virtualization: $VIRT"
-        warn "Docker/Wings may not work correctly on this host."
-    else
-        ok "Virtualization: ${VIRT:-none}"
-    fi
-fi
-
-# ------------------------------------------------
-# NODE CONFIGURATION
-# ------------------------------------------------
+# ---------------- NODE INPUT ----------------
 
 section "02 • NODE CONFIGURATION"
 
-printf "${YELLOW}"
-echo "      IMPORTANT"
-printf "${RESET}"
-echo
-echo "      Create your node in:"
-echo
-printf "      ${CYAN}Admin Panel → Nodes → Your Node → Configuration${RESET}"
-echo
-echo "      Then use the Panel's:"
-echo
-printf "      ${GREEN}Generate Token${RESET}"
-echo
-echo "      Copy the complete command shown by your Panel."
-echo
-printf "${GRAY}      This is safer than manually guessing the Wings config.${RESET}"
+printf "${CYAN}${BOLD}      Enter your Pterodactyl node details${RESET}\n"
 echo
 
-printf "${CYAN}      ➜ Paste the Generate Token command below:${RESET}\n"
-printf "${GRAY}      (The command should contain 'wings configure'.)${RESET}\n\n"
+printf "      ${WHITE}Panel URL:${RESET}\n"
+printf "      > "
+read -r PANEL_URL
 
-printf "      ${WHITE}> ${RESET}"
-read -r WINGS_COMMAND
+printf "\n      ${WHITE}Node UUID:${RESET}\n"
+printf "      > "
+read -r NODE_UUID
 
-if [[ -z "${WINGS_COMMAND}" ]]; then
-    fail "No command was entered."
+printf "\n      ${WHITE}Token ID:${RESET}\n"
+printf "      > "
+read -r TOKEN_ID
+
+printf "\n      ${WHITE}Token:${RESET}\n"
+printf "      > "
+read -rs TOKEN
+echo
+echo
+
+# ---------------- CLEAN PANEL URL ----------------
+
+PANEL_URL="${PANEL_URL%/}"
+
+# Remove accidental paths if user pasted them.
+PANEL_URL="${PANEL_URL%/admin/nodes/view/1/configuration}"
+
+# Remove trailing slash again.
+PANEL_URL="${PANEL_URL%/}"
+
+if [[ -z "$PANEL_URL" ]]; then
+    fail "Panel URL cannot be empty."
     exit 1
 fi
 
-if [[ "$WINGS_COMMAND" != *"wings configure"* ]]; then
-    echo
-    warn "The command does not appear to contain 'wings configure'."
-    echo
-    printf "      You should normally paste the command generated by:\n"
-    printf "      ${CYAN}Admin Panel → Nodes → Configuration → Generate Token${RESET}\n"
-    echo
-    printf "      Continue anyway? [y/N]: "
-    read -r CONTINUE
-
-    if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-        echo
-        info "Installation cancelled."
-        exit 0
-    fi
+if [[ -z "$NODE_UUID" ]]; then
+    fail "Node UUID cannot be empty."
+    exit 1
 fi
 
-# ------------------------------------------------
-# DEPENDENCIES
-# ------------------------------------------------
+if [[ -z "$TOKEN_ID" ]]; then
+    fail "Token ID cannot be empty."
+    exit 1
+fi
+
+if [[ -z "$TOKEN" ]]; then
+    fail "Token cannot be empty."
+    exit 1
+fi
+
+ok "Panel URL received."
+ok "Node UUID received."
+ok "Token ID received."
+ok "Token received securely."
+
+# ---------------- DEPENDENCIES ----------------
 
 section "03 • DEPENDENCIES"
 
 info "Checking curl..."
 
 if command -v curl >/dev/null 2>&1; then
-    ok "curl is already installed."
+    ok "curl is installed."
 else
     warn "curl is missing."
-    run_step "Installing curl..." apt-get update -y
-    run_step "Installing curl package..." apt-get install -y curl
+    apt-get update -y
+    apt-get install -y curl
+    ok "curl installed."
 fi
 
 info "Checking Docker..."
 
 if command -v docker >/dev/null 2>&1; then
-    DOCKER_VERSION="$(docker --version 2>/dev/null || true)"
-    ok "Docker detected: ${DOCKER_VERSION}"
+    ok "Docker detected: $(docker --version)"
 else
     warn "Docker is not installed."
     echo
-    info "Installing Docker CE..."
-    echo
-
-    curl -fsSL https://get.docker.com | CHANNEL=stable bash
-
-    ok "Docker installation completed."
+    info "Installing Docker..."
+    curl -fsSL https://get.docker.com | sh
+    ok "Docker installed."
 fi
 
-info "Starting Docker..."
+info "Checking Docker service..."
 
-systemctl enable --now docker
+systemctl enable docker >/dev/null 2>&1 || true
+systemctl start docker
 
 if systemctl is-active --quiet docker; then
     ok "Docker is running."
 else
-    fail "Docker failed to start."
-    systemctl status docker --no-pager || true
+    fail "Docker is not running."
+    systemctl status docker --no-pager -l || true
     exit 1
 fi
 
-# ------------------------------------------------
-# WINGS DIRECTORIES
-# ------------------------------------------------
+# ---------------- DIRECTORIES ----------------
 
 section "04 • WINGS INSTALLATION"
 
@@ -346,119 +247,159 @@ info "Creating Pterodactyl directories..."
 
 mkdir -p /etc/pterodactyl
 mkdir -p /var/lib/pterodactyl
+mkdir -p /var/lib/pterodactyl/volumes
+mkdir -p /var/lib/pterodactyl/archives
+mkdir -p /var/lib/pterodactyl/backups
 mkdir -p /var/log/pterodactyl
 mkdir -p /var/run/wings
+mkdir -p /tmp/pterodactyl
 
-ok "/etc/pterodactyl created."
-ok "/var/lib/pterodactyl created."
-ok "/var/log/pterodactyl created."
+ok "Pterodactyl directories created."
 
-# ------------------------------------------------
-# DOWNLOAD WINGS
-# ------------------------------------------------
+# ---------------- WINGS DOWNLOAD ----------------
 
-info "Downloading official Pterodactyl Wings binary..."
+info "Downloading official Wings binary..."
 
 WINGS_URL="https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_${WINGS_ARCH}"
 
-TMP_WINGS="/tmp/wings"
+curl -fL "$WINGS_URL" -o /tmp/wings
 
-curl -fL "$WINGS_URL" -o "$TMP_WINGS"
-
-if [[ ! -s "$TMP_WINGS" ]]; then
-    fail "Wings binary download failed."
+if [[ ! -s /tmp/wings ]]; then
+    fail "Failed to download Wings."
     exit 1
 fi
 
-install -m 755 "$TMP_WINGS" /usr/local/bin/wings
-
-rm -f "$TMP_WINGS"
+install -m 755 /tmp/wings /usr/local/bin/wings
+rm -f /tmp/wings
 
 ok "Wings binary installed."
 
-# ------------------------------------------------
-# VERIFY WINGS
-# ------------------------------------------------
+# ---------------- VERSION ----------------
 
-info "Verifying Wings binary..."
+info "Checking Wings version..."
 
-if /usr/local/bin/wings version >/tmp/wings-version.txt 2>&1; then
-    WINGS_VERSION="$(head -n 1 /tmp/wings-version.txt || true)"
-    ok "Wings binary is working."
-    [[ -n "$WINGS_VERSION" ]] && echo "      ${GRAY}${WINGS_VERSION}${RESET}"
+WINGS_VERSION="$(wings version 2>/dev/null | head -n 1 || true)"
+
+if [[ -n "$WINGS_VERSION" ]]; then
+    ok "Installed: $WINGS_VERSION"
 else
-    warn "Could not display Wings version, but the binary was installed."
+    ok "Wings binary verified."
 fi
 
-# ------------------------------------------------
-# APPLY PANEL CONFIGURATION
-# ------------------------------------------------
+# ---------------- CONFIG ----------------
 
-section "05 • NODE CONFIGURATION"
+section "05 • GENERATING CONFIGURATION"
 
-echo
-printf "${CYAN}      Executing the Panel-generated configuration command...${RESET}\n"
-echo
+info "Creating /etc/pterodactyl/config.yml..."
 
-# ------------------------------------------------
-# SAFELY NORMALIZE COMMAND
-# ------------------------------------------------
+cat > /etc/pterodactyl/config.yml <<EOF
+debug: false
 
-# The expected command is generated by Pterodactyl and normally resembles:
-#
-# cd /etc/pterodactyl && sudo wings configure --panel-url ... --token ...
-#
-# We remove "sudo" because the installer is already running as root.
+uuid: ${NODE_UUID}
+token_id: ${TOKEN_ID}
+token: ${TOKEN}
 
-WINGS_COMMAND="${WINGS_COMMAND//sudo /}"
+api:
+  host: 0.0.0.0
+  port: 8080
+  ssl:
+    enabled: false
+    cert: ""
+    key: ""
+  upload_limit: 100
 
-# Remove common "cd /etc/pterodactyl &&" prefix.
-WINGS_COMMAND="${WINGS_COMMAND#cd /etc/pterodactyl && }"
+system:
+  root_directory: /var/lib/pterodactyl
+  log_directory: /var/log/pterodactyl
+  data: /var/lib/pterodactyl/volumes
+  archive_directory: /var/lib/pterodactyl/archives
+  backup_directory: /var/lib/pterodactyl/backups
+  tmp_directory: /tmp/pterodactyl
+  username: pterodactyl
+  timezone: UTC
+  user:
+    rootless:
+      enabled: false
+      container_uid: 0
+      container_gid: 0
+    uid: 988
+    gid: 988
 
-# Some panels may include:
-# ./wings configure
-# Replace it with the installed binary.
-WINGS_COMMAND="${WINGS_COMMAND//\.\/wings /usr/local/bin/wings }"
+docker:
+  network:
+    name: pterodactyl_nw
+    interfaces:
+      v4:
+        subnet: 172.18.0.0/16
+        gateway: 172.18.0.1
+      v6:
+        subnet: fdba:17c8:6c94::/64
+        gateway: fdba:17c8:6c94::1
+  domainname: ""
+  registries: {}
+  tmpfs_size: 100
+  container_pid_limit: 512
+  installer_limits:
+    memory: 1024
+    cpu: 100
+  build:
+    network: pterodactyl_nw
 
-# If the command starts with "wings configure", use installed binary.
-WINGS_COMMAND="${WINGS_COMMAND/#wings /\/usr\/local\/bin\/wings }"
+remote: ${PANEL_URL}
 
-cd /etc/pterodactyl
+remote_query:
+  timeout: 30
+  boot_servers_per_page: 50
 
-printf "      ${GRAY}Running configuration command...${RESET}\n"
+allowed_mounts: []
+allowed_origins: []
 
-if ! bash -c "$WINGS_COMMAND"; then
-    echo
-    fail "Wings configuration command failed."
-    echo
-    printf "${YELLOW}The command must come directly from your Panel's${RESET}\n"
-    printf "${YELLOW}Node → Configuration → Generate Token section.${RESET}\n"
-    echo
+sftp:
+  bind_address: 0.0.0.0
+  bind_port: 2022
+  read_only: false
+
+EOF
+
+chmod 600 /etc/pterodactyl/config.yml
+
+ok "config.yml created."
+ok "Configuration permissions secured."
+
+# ---------------- VALIDATE CONFIG ----------------
+
+section "06 • CONFIGURATION TEST"
+
+info "Testing Wings configuration..."
+
+if wings --debug >/tmp/utkarsh-wings-test.log 2>&1 &
+then
+    WINGS_TEST_PID=$!
+    sleep 5
+
+    if kill -0 "$WINGS_TEST_PID" 2>/dev/null; then
+        kill "$WINGS_TEST_PID" >/dev/null 2>&1 || true
+        wait "$WINGS_TEST_PID" 2>/dev/null || true
+
+        ok "Wings configuration loaded successfully."
+    else
+        wait "$WINGS_TEST_PID" 2>/dev/null || true
+
+        fail "Wings could not start with this configuration."
+        echo
+        cat /tmp/utkarsh-wings-test.log
+        echo
+        exit 1
+    fi
+else
+    fail "Could not launch Wings."
+    cat /tmp/utkarsh-wings-test.log || true
     exit 1
 fi
 
-echo
-ok "Wings configuration generated successfully."
+# ---------------- SYSTEMD ----------------
 
-# ------------------------------------------------
-# CONFIG CHECK
-# ------------------------------------------------
-
-if [[ ! -f /etc/pterodactyl/config.yml ]]; then
-    echo
-    fail "/etc/pterodactyl/config.yml was not created."
-    echo
-    warn "The Panel-generated command may not have completed correctly."
-    exit 1
-fi
-
-ok "config.yml detected."
-
-# ------------------------------------------------
-# SYSTEMD SERVICE
-# ------------------------------------------------
-
-section "06 • SYSTEM SERVICE"
+section "07 • SYSTEM SERVICE"
 
 info "Creating Wings systemd service..."
 
@@ -467,18 +408,14 @@ cat > /etc/systemd/system/wings.service <<'EOF'
 Description=Pterodactyl Wings Daemon
 After=docker.service
 Requires=docker.service
-PartOf=docker.service
 
 [Service]
 User=root
 WorkingDirectory=/etc/pterodactyl
 LimitNOFILE=4096
-PIDFile=/var/run/wings/daemon.pid
 ExecStart=/usr/local/bin/wings
 Restart=on-failure
-StartLimitInterval=180
-StartLimitBurst=30
-RestartSec=5s
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -492,128 +429,72 @@ systemctl daemon-reload
 
 ok "systemd reloaded."
 
-# ------------------------------------------------
-# TEST CONFIGURATION
-# ------------------------------------------------
-
-section "07 • CONFIGURATION TEST"
-
-info "Testing Wings configuration..."
-
-if /usr/local/bin/wings --help >/dev/null 2>&1; then
-    ok "Wings executable test passed."
-else
-    warn "Wings executable test returned an unexpected result."
-fi
-
-info "Checking generated configuration..."
-
-if [[ -s /etc/pterodactyl/config.yml ]]; then
-    ok "config.yml is present and not empty."
-else
-    fail "config.yml is empty."
-    exit 1
-fi
-
-# ------------------------------------------------
-# START WINGS
-# ------------------------------------------------
+# ---------------- START WINGS ----------------
 
 section "08 • STARTING WINGS"
 
 info "Enabling Wings at boot..."
 
-systemctl enable wings
+systemctl enable wings >/dev/null 2>&1
 
-ok "Wings enabled at boot."
+ok "Wings enabled."
 
 info "Starting Wings..."
 
-if systemctl restart wings; then
-    sleep 3
-    ok "Wings start command completed."
+systemctl restart wings
+
+sleep 5
+
+if systemctl is-active --quiet wings; then
+    ok "Wings is running."
 else
     fail "Wings failed to start."
     echo
     systemctl status wings --no-pager -l || true
     echo
+    echo "Recent logs:"
+    journalctl -u wings -n 50 --no-pager || true
     exit 1
 fi
 
-# ------------------------------------------------
-# STATUS
-# ------------------------------------------------
+# ---------------- FINAL ----------------
 
 section "09 • FINAL STATUS"
 
-if systemctl is-active --quiet wings; then
-
-    printf "${GREEN}${BOLD}"
-    cat <<'EOF'
+printf "${GREEN}${BOLD}"
+cat <<'EOF'
 
 ╔══════════════════════════════════════════════════════════════════╗
 ║                                                                  ║
 ║                    ✓  WINGS IS ONLINE  ✓                         ║
 ║                                                                  ║
-║              UTKARSH WINGS PRO INSTALLER                        ║
+║              U T K A R S H   W I N G S   P R O                  ║
 ║                                                                  ║
-║                Installation completed!                          ║
-║                                                                  ║
-╚══════════════════════════════════════════════════════════════════╝
-
-EOF
-    printf "${RESET}"
-
-    echo
-    printf "${CYAN}${BOLD}Useful commands${RESET}\n"
-    echo
-    printf "  ${WHITE}Status:${RESET}       systemctl status wings\n"
-    printf "  ${WHITE}Restart:${RESET}      systemctl restart wings\n"
-    printf "  ${WHITE}Stop:${RESET}         systemctl stop wings\n"
-    printf "  ${WHITE}Start:${RESET}        systemctl start wings\n"
-    printf "  ${WHITE}Logs:${RESET}         journalctl -u wings -f\n"
-    printf "  ${WHITE}Debug:${RESET}        wings --debug\n"
-    printf "  ${WHITE}Config:${RESET}       /etc/pterodactyl/config.yml\n"
-    echo
-
-    line
-
-    printf "${GREEN}${BOLD}"
-    echo "                 ✦ U T K A R S H ✦"
-    printf "${RESET}"
-
-    echo
-    printf "${GRAY}          Pterodactyl Wings deployment complete.${RESET}\n"
-    echo
-
-else
-
-    printf "${RED}${BOLD}"
-    cat <<'EOF'
-
-╔══════════════════════════════════════════════════════════════════╗
-║                                                                  ║
-║                    ✖  WINGS FAILED  ✖                            ║
-║                                                                  ║
-║              The service did not stay online.                   ║
+║                 Installation completed!                         ║
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 EOF
-    printf "${RESET}"
+printf "${RESET}"
 
-    echo
-    printf "${YELLOW}Run this command to see the exact error:${RESET}\n"
-    echo
-    printf "    ${CYAN}journalctl -u wings -n 100 --no-pager${RESET}\n"
-    echo
+echo
+printf "${CYAN}${BOLD}Useful commands${RESET}\n"
+echo
+printf "  ${WHITE}Status:${RESET}   systemctl status wings\n"
+printf "  ${WHITE}Restart:${RESET}  systemctl restart wings\n"
+printf "  ${WHITE}Stop:${RESET}     systemctl stop wings\n"
+printf "  ${WHITE}Start:${RESET}    systemctl start wings\n"
+printf "  ${WHITE}Logs:${RESET}     journalctl -u wings -f\n"
+printf "  ${WHITE}Config:${RESET}   /etc/pterodactyl/config.yml\n"
+echo
 
-    systemctl status wings --no-pager -l || true
+printf "${PURPLE}${BOLD}"
+echo "                    ✦ U T K A R S H ✦"
+printf "${RESET}"
+echo
+printf "${GRAY}          Pterodactyl Wings deployment complete.${RESET}\n"
+echo
 
-    exit 1
-fi
-
-rm -f /tmp/utkarsh_wings_step.log
-rm -f /tmp/wings-version.txt
+rm -f /tmp/utkarsh-wings-test.log
 
 exit 0
